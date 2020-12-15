@@ -126,48 +126,14 @@ void compute_similarity_transform(
 	auto cov_mat = (centered_origin / origin_scale).transpose() * (centered_target / target_scale);
 	float angle = atan2f(cov_mat(0, 1) - cov_mat(1, 0), cov_mat(0, 0) + cov_mat(1, 1));
 
-	float c = (target_scale / origin_scale) * cos(angle);
-	float s = (target_scale / origin_scale) * sin(angle);
+	float scale = target_scale / origin_scale;
+	float c = scale * cosf(angle);
+	float s = scale * sinf(angle);
 	scale_rotate(0, 0) =  c;
 	scale_rotate(0, 1) =  s;
 	scale_rotate(1, 0) = -s;
 	scale_rotate(1, 1) =  c;
 	transform = target_centroid - origin_centroid * scale_rotate;
-
-	float before_norm = (target - origin).squaredNorm();
-	float after_norm = (target - ((origin * scale_rotate).rowwise() + transform)).squaredNorm();
-	if (before_norm < after_norm) {
-		printf("before: %f -> after: %f, weird\n", before_norm, after_norm);
-	}
-
-	// Eigen::Matrix2f affine_mat = ((centered_origin.transpose() * centered_origin).inverse() * centered_origin.transpose()) * centered_target;
-	// float scale = sqrtf(fabsf(affine_mat.determinant()));
-	// float angle = atan2f(
-	// 	affine_mat(0, 1) - affine_mat(1, 0),
-	// 	affine_mat(0, 0) + affine_mat(1, 1)
-	// 	);
-	// scale_rotate(0, 0) = scale_rotate(1, 1) = scale * cosf(angle);
-	// scale_rotate(0, 1) = scale * sinf(angle);
-	// scale_rotate(1, 0) = -scale_rotate(0, 1);
-	// transform = target_centroid - origin_centroid * scale_rotate;
-
-	// int rows = (int)origin.rows();
-	// int cols = (int)origin.cols();
-
-	// Eigen::MatrixX3f origin_new(rows, 3);
-	// origin_new.block(0, 0, rows, 2) = origin;
-	// origin_new.block(0, 2, rows, 1) = Eigen::VectorXf::Ones(rows);
-
-	// auto pinv = (origin_new.transpose() * origin_new).inverse() * origin_new.transpose();
-	// auto weight = pinv * target;
-
-	// scale_rotate(0, 0) = weight(0, 0);
-	// scale_rotate(0, 1) = weight(0, 1);
-	// scale_rotate(1, 0) = weight(1, 0);
-	// scale_rotate(1, 1) = weight(1, 1);
-
-	// transform(0, 0) = weight(2, 0);
-	// transform(0, 1) = weight(2, 1);
 }
 
 void normalization(
@@ -228,10 +194,8 @@ void generate_validation_data(std::vector<Sample> &data, const Eigen::MatrixX2f 
 		data[i].scale_rotate_normalization = scale_rotate;
 		data[i].transform_normalization = transform;
 
-		compute_similarity_transform(origin, target, scale_rotate, transform);
-		
-		data[i].scale_rotate_unnormalization = scale_rotate;
-		data[i].transform_unnormalization = transform;			
+		data[i].scale_rotate_unnormalization = scale_rotate.inverse();
+		data[i].transform_unnormalization = - transform * scale_rotate.inverse();
 
 		normalization(data[i].landmarks_truth_normalization, data[i].landmarks_truth, data[i].scale_rotate_normalization, data[i].transform_normalization);
 
@@ -274,10 +238,12 @@ void generate_train_data(std::vector<Sample> &data, const int &initialization)
 		data[i].scale_rotate_normalization = scale_rotate;
 		data[i].transform_normalization = transform;
 
-		compute_similarity_transform(origin, target, scale_rotate, transform);
-		
-		data[i].scale_rotate_unnormalization = scale_rotate;
-		data[i].transform_unnormalization = transform;			
+		data[i].scale_rotate_unnormalization = scale_rotate.inverse();
+		data[i].transform_unnormalization = - transform * scale_rotate.inverse();
+
+		// compute_similarity_transform(origin, target, scale_rotate, transform);
+		// data[i].scale_rotate_unnormalization = scale_rotate;
+		// data[i].transform_unnormalization = transform;			
 
 		normalization(data[i].landmarks_truth_normalization, data[i].landmarks_truth, data[i].scale_rotate_normalization, data[i].transform_normalization);
 	}
@@ -286,18 +252,19 @@ void generate_train_data(std::vector<Sample> &data, const int &initialization)
 	{
 		for(int j = 0; j < initialization; ++j)
 		{
+			auto& train_data = data[i + j * data_size_origin];
 			if(j != 0)
-				data[i + j * data_size_origin] = data[i];
+				train_data = data[i];
 
 			int index = 0;
-			do{
+			do {
 				index = rand() % (data_size_origin);
-			}while(index == i);
+			} while (index == i);
 
-			data[i + j * data_size_origin].landmarks_cur_normalization = data[index].landmarks_truth_normalization;
-			normalization(data[i + j * data_size_origin].landmarks_cur, data[i + j * data_size_origin].landmarks_cur_normalization, 
-				data[i + j * data_size_origin].scale_rotate_unnormalization, data[i + j * data_size_origin].transform_unnormalization);
-			check_edge(data[i + j * data_size_origin]);
+			train_data.landmarks_cur_normalization = data[index].landmarks_truth_normalization;
+			normalization(train_data.landmarks_cur, train_data.landmarks_cur_normalization, 
+				train_data.scale_rotate_unnormalization, train_data.transform_unnormalization);
+			check_edge(train_data);
 
 			std::stringstream stream;
 			stream << i + j * data_size_origin;
@@ -355,14 +322,14 @@ bool Node::evaluate(
 	const Eigen::RowVector2f& translation_normal_to_image
 	) const
 {
-	auto u_cur = current_normalized_shape.row(landmark_index1);
-	auto v_cur = current_normalized_shape.row(landmark_index2);
+	Eigen::RowVector2f u_cur = current_normalized_shape.row(landmark_index1);
+	Eigen::RowVector2f v_cur = current_normalized_shape.row(landmark_index2);
 
-	auto u_data = u_cur + index1_offset * transform_mean_to_normal;
-	auto v_data = v_cur + index2_offset * transform_mean_to_normal;
+	Eigen::RowVector2f u_data = u_cur + index1_offset * transform_mean_to_normal;
+	Eigen::RowVector2f v_data = v_cur + index2_offset * transform_mean_to_normal;
 
-	auto u_data_image = u_data * transform_normal_to_image + translation_normal_to_image;
-	auto v_data_image = v_data * transform_normal_to_image + translation_normal_to_image;
+	Eigen::RowVector2f u_data_image = (u_data * transform_normal_to_image + translation_normal_to_image);
+	Eigen::RowVector2f v_data_image = (v_data * transform_normal_to_image + translation_normal_to_image);
 
 	int u_value = 0;
 	int v_value = 0;
